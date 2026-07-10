@@ -24,7 +24,7 @@ This project models the probability of a successful stolen base attempt based on
 ## Sample Output
 
 A generated pregame report for a sample opponent:
-[`sample_output/SB_Report_SampleOpponent_2026-07-04.pdf`](sample-output/SB_Report_SampleOpponent_2026-05-02.pdf)
+[`sample-output/SB_Report_SampleOpponent_2026-07-04.pdf`](sample-output/SB_Report_SampleOpponent_2026-05-02.pdf)
 
 The report flags the best and worst windows to run in a single glance - e.g. in anticipation of a breaking ball on a 0-0 count is the green light, anticipation of an off-speed pitch on a full count, not so much.
 
