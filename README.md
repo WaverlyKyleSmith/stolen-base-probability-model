@@ -3,11 +3,11 @@ Predicts stolen base probability in the NECBL and auto-generates pregame scoutin
 
 ## Overview
 
-This project models the probability of a successful stolen base attempt based on pitch characteristics, game situation, and catcher ability. It combines a statistical model built in R with a derived metric, backstop+ into a printable, game-ready scouting report. This report is then utilized in-game as a tool by coaches and players to decide when to send a runner against a specific pitcher/catcher matchup. It's automated nature allows for reports to be created mid-game to take advantage of catcher substitutions or relief pitching.
+This project models the probability of a successful stolen base attempt based on pitch characteristics, game situation, and catcher ability. It combines a statistical model built in R with a derived metric, backstop+ into a printable, game-ready scouting report. This report is then utilized in-game as a tool by coaches and players to decide when to send a runner against a specific pitcher/catcher matchup. Its automated nature allows for reports to be created mid-game to take advantage of catcher substitutions or relief pitching.
 
 ## Pipeline
 
-1. **Probability Model** (`model/`) - a logistic regression built on ~300 stolen base attemptts from the 2025 NECBL season (via Trackman), using pitch velocity, movement (IVB, horizontal break), zone time, catcher metrics, pitcher handedness, and count. Mean Absolute Error of ~3.5 percentage points. [Full writeup with tables and plots →](model/StolenBase.pdf)
+1. **Probability Model** (`model/`) - a logistic regression built on ~300 stolen base attempts from the 2025 NECBL season (via Trackman), using pitch velocity, movement (IVB, horizontal break), zone time, catcher metrics, pitcher handedness, and count. Mean Absolute Error of ~3.5 percentage points. [Full writeup with tables and plots →](model/StolenBase.pdf)
 
 2. **Backstop+** (`backstop-plus/`) - a catcher defensive metric scaled like OPS+/wRC+ (100 = league average), combining pop time, exchange time, and throw speed into a single number for comparing catchers' ability to control the running game.
 
@@ -44,6 +44,6 @@ Trackman data
 ## Repo Structure
 
 - `model/` - statistical backbone model (R Markdown source + knitted PDF)
-- `backstop-plus/` - catcher metric rerivation (Python Notebook)
+- `backstop-plus/` - catcher metric derivation (Python Notebook)
 - `report-generator/` - combines both into the final report
 - `sample-output/` - example generated scouting report
