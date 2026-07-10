@@ -37,8 +37,8 @@ The report flags the best and worst windows to run in a single glance - e.g. in 
 
 ## Tech Stack
 
-R (tidyverse, dplyr, readr, knitr, caret, randomForest, car, pscl, ResourceSelection, rms)
-Python (pandas, numpy, reportlab)
+R (tidyverse, dplyr, readr, knitr, caret, randomForest, car, pscl, ResourceSelection, rms) <br>
+Python (pandas, numpy, reportlab) <br>
 Trackman data
 
 ## Repo Structure
