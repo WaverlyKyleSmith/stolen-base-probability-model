@@ -1,0 +1,412 @@
+---
+title: "Stolen Base Probability Model"
+author: |
+  | Kyle Smith
+  | \small Bristol Blues
+  | \small NECBL
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+      fig_crop: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse); library(dplyr); library(readr)
+
+read_csvs <- function(folder_path, bind_rows = TRUE) {
+  csv_files <- list.files(folder_path, pattern = "\\.csv$", full.names = TRUE)
+  csv_files <- csv_files[!grepl("unverified", basename(csv_files), ignore.case = TRUE)]
+  
+  if (length(csv_files) == 0) {
+    message("No CSV files found in: ", folder_path)
+    return(NULL)
+  }
+  
+  data_list <- lapply(csv_files, read.csv, colClasses = "character")
+  names(data_list) <- tools::file_path_sans_ext(basename(csv_files))
+  
+  message("Read ", length(csv_files), " CSV file(s): \n", paste(names(data_list), collapse = "\n"))
+  
+  if (bind_rows) {
+    dplyr::bind_rows(data_list, .id = "source_file") %>%
+      type.convert(as.is = TRUE)
+  } else {
+    lapply(data_list, type.convert, as.is = TRUE)
+  }
+}
+
+pitches <- read_csvs("data/raw_csvs")
+#Updated as of 6/24/26
+```
+
+This report encapsulates the probability of a successful stolen base attempt in the NECBL. Probability is calculated based on:
+
+- The amount of time elapsed from when the pitcher releases the ball to when it crosses home plate (Zone Time)
+
+- Extension
+
+- Pitcher Handiness
+
+- Induced Vertical Break
+
+- Horizontal Break
+
+- Pitch Velocity
+
+- Catcher Exchange Time
+
+- Count
+
+- Pitch Location at the time of the catch
+
+Data is used from the 2025 NECBL season and the 2026 season as of June 24th, yielding roughly 300 stolen base attempts through Trackman. Mean Absolute Error calculations indicate that the predicted probabilities may be off by only 3.5 percentage points on average, indicating good fit and genuine predictive power. Years before 2025 have several tagging errors in the data that halt predictability. 
+
+Given the exploratory nature of this analysis and the small sample size of 301 stolen base attempts, findings are reported at the 75% confidence level. Results should be interpreted directionally and revisited as additional data becomes available.
+
+Not considered in the probability calculations are runner metrics like jump or speed as they are not tagged in Trackman. Additionally, Trackman data is succeptible to user error, and the probability calculations are heavily reliant on what is tagged as well as what the radar detects.
+
+\newpage
+
+```{r, include = FALSE}
+sb_model_data <- pitches %>%
+  filter(!is.na(PopTime), !is.na(ExchangeTime), PlayResult %in% c("StolenBase", "CaughtStealing"), TaggedPitchType != "Sweeper") %>%
+  dplyr::select(
+    Date, TaggedPitchType, PlayResult, ZoneTime, Extension, PitcherThrows, ExchangeTime, ThrowSpeed, CatchPositionX, CatchPositionZ, RelSpeed, ZoneSpeed, InducedVertBreak, HorzBreak, Balls, Strikes
+  ) %>%
+  mutate(
+    StolenBase = as.integer(PlayResult == "StolenBase"),
+    SpeedDrop = RelSpeed - ZoneSpeed,
+    count = case_when(
+      Balls == 3 & Strikes == 2 ~ "Full",
+      Balls == 0 & Strikes == 0 ~ "0-0",
+      Balls > Strikes ~ "HitterAhead",
+      Strikes > Balls ~ "PitcherAhead",
+      TRUE ~ "Even"
+    ),
+    count = factor(count, levels = c("0-0", "HitterAhead", "Even", "PitcherAhead", "Full")),
+    IVB = ifelse(is.na(InducedVertBreak), median(InducedVertBreak, na.rm = T), InducedVertBreak),
+    HorzBreak = ifelse(is.na(HorzBreak), median(HorzBreak, na.rm = T), HorzBreak)
+  ) %>%
+  dplyr::select(-Balls, -Strikes, -ZoneSpeed)
+
+sb_model <- glm(StolenBase ~
+                  ZoneTime + Extension + PitcherThrows +
+                  IVB + HorzBreak + RelSpeed +
+                  ExchangeTime + ThrowSpeed + CatchPositionX + CatchPositionZ +
+                  count,
+                data = sb_model_data,
+                family = binomial(link = "logit"))
+```
+
+```{r, include = FALSE}
+sb_model_data_rf <- sb_model_data %>%
+  dplyr::select(-Date, -PlayResult, -InducedVertBreak) %>%
+  mutate(
+    StolenBase = as.factor(StolenBase),
+    PitcherThrows = as.factor(PitcherThrows),
+    count = as.factor(count)
+  ) %>%
+  na.omit()
+
+library(caret); library(randomForest)
+rf_model <- randomForest(StolenBase ~ ., data = sb_model_data_rf, importance = T, ntree = 500)
+
+importance(rf_model) %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  ggplot(aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Variable Importance", x = "", y = "Mean Decrease in Accuracy") +
+  theme_minimal()
+```
+
+```{r, echo = FALSE}
+model_summary <- summary(sb_model)$coefficients %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  mutate(
+    Significance = case_when(
+      `Pr(>|z|)` < 0.2 ~ "^",
+      `Pr(>|z|)` < 0.25 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  rename(
+    Std.Error = `Std. Error`,
+    Z.Value = `z value`,
+    P.Value = `Pr(>|z|)`
+  ) %>%
+  mutate(across(where(is.numeric), ~round(., 4)))
+
+knitr::kable(model_summary,
+             caption = "Stolen Base Model Coefficients (^ p < 0.20, * p < 0.25)")
+```
+The most significant predictors per the model are IVB and Horizontal Break (essentially pitch type), Throw Speed, and the height of the caught pitch (CatchPositionZ). Additionally, Pitcher Ahead counts are the only count category to not have significantly lower stolen base probability than the first pitch.
+
+Pitches with more movement appear to be associated with lower stolen base success rates. Likely, when the defense anticipates a stolen base attempt, they tend to call more breaking balls, which disrupt the runner's read. This is further evident in Horizontal break being the storngest predictor in the model.
+
+Catcher throw speed appears intuitively correlated to lower success rates.
+
+Ball-heavy counts appear to be correlated to lower rates as well relative to the first pitch. This is almost certainly due to the fact that pitchers in these situations tend to throw strikes which are easier for the catcher to catch and handle. This holds true in Even counts as well. In pitches where the hitter has no advantage (0-0, Pitcher Ahead), this logic disappears, represented by its insignificance in the model.
+
+The height at which the ball is caught reduces catcher pop time, leading to an apparent decline in the probability of a stolen base.
+
+Insignificant variables are not to be disregarded as they are included intuitively, but revisited when more data is available.
+
+\newpage
+
+```{r, include = FALSE}
+sb_model_data <- sb_model_data %>%
+  mutate(
+    SB_prob = predict(sb_model, type = "response"),
+    SB_prob = paste0(round(SB_prob*100, 1), "%")
+  )
+```
+
+```{r, include = FALSE}
+library(car)
+vif(sb_model)
+```
+
+```{r, include = FALSE}
+library(pscl); library(ResourceSelection)
+pR2(sb_model)
+
+library(rms)
+lrm_model <- lrm(StolenBase ~ ZoneTime + Extension + PitcherThrows + IVB + HorzBreak + RelSpeed + ExchangeTime + ThrowSpeed + CatchPositionX + CatchPositionZ + count, data = sb_model_data, x = T, y = T)
+
+cal <- calibrate(lrm_model, method = "boot", B = 200)
+plot(cal, main = "Bootstrap Calibration")
+#Used calibration to test with low sample size. 3.5% MAE.
+```
+
+The subsequent plots display success rates for stolen bases by catcher throw speed, pitcher handedness, and count.
+\vspace{20pt}
+
+```{r, echo = FALSE, fig.height = 5, fig.width = 7}
+sb_model_data %>%
+  filter(!is.na(ThrowSpeed) & !is.na(StolenBase),
+         ThrowSpeed >= 68 & ThrowSpeed <= 84) %>%
+  mutate(ThrowSpeedBucket = cut(ThrowSpeed, 
+                                breaks = seq(floor(min(ThrowSpeed)), 
+                                             ceiling(max(ThrowSpeed)), 
+                                             by = 2),
+                                include.lowest = TRUE)) %>%
+  group_by(ThrowSpeedBucket) %>%
+  summarise(
+    StolenBases = sum(StolenBase),
+    CaughtStealing = n() - sum(StolenBase),
+    SB_Pct = round(sum(StolenBase) / n() * 100, 1)
+  ) %>%
+  tidyr::pivot_longer(cols = c(StolenBases, CaughtStealing), 
+                      names_to = "Result", values_to = "Count") %>%
+  ggplot(aes(x = ThrowSpeedBucket, y = Count, fill = Result)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Count), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 3) +
+  geom_text(data = . %>% distinct(ThrowSpeedBucket, SB_Pct),
+            aes(x = ThrowSpeedBucket, y = -1.5, 
+                label = paste0(SB_Pct, "%"), fill = NULL),
+            size = 3, color = "black") +
+  scale_fill_manual(values = c("StolenBases" = "steelblue", "CaughtStealing" = "firebrick")) +
+  labs(title = "Stolen Base Outcomes by Catcher Throw Speed",
+       x = "Throw Speed (mph)", y = "Count",
+       caption = "Percentage shown below x-axis = Stolen Base Success Rate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+\newpage
+
+```{r, echo = FALSE, fig.height = 5, fig.width = 7}
+sb_model_data %>%
+  filter(!is.na(PitcherThrows)) %>%
+  group_by(PitcherThrows) %>%
+  summarise(
+    StolenBases = sum(StolenBase),
+    CaughtStealing = n() - sum(StolenBase),
+    SB_Pct = round(sum(StolenBase) / n() * 100, 1)
+  ) %>%
+  tidyr::pivot_longer(cols = c(StolenBases, CaughtStealing),
+                      names_to = "Result", values_to = "Count") %>%
+  ggplot(aes(x = PitcherThrows, y = Count, fill = Result)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Count), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 3) +
+  geom_text(data = . %>% distinct(PitcherThrows, SB_Pct),
+            aes(x = PitcherThrows, y = -1.5, 
+                label = paste0(SB_Pct, "%"), fill = NULL),
+            size = 3, color = "black") +
+  scale_fill_manual(values = c("StolenBases" = "steelblue", "CaughtStealing" = "firebrick")) +
+  labs(title = "Stolen Base Outcomes by Pitcher Handedness",
+       x = "Pitcher Throws", y = "Count",
+       caption = "Percentage shown below x-axis = SB success rate") +
+  theme_minimal()
+```
+
+\newpage
+
+```{r, echo = FALSE, fig.height = 5, fig.width = 7}
+sb_model_data %>%
+  group_by(count) %>%
+  summarise(
+    StolenBases = sum(StolenBase),
+    CaughtStealing = n() - sum(StolenBase),
+    SB_Pct = round(sum(StolenBase) / n() * 100, 1)
+  ) %>%
+  tidyr::pivot_longer(cols = c(StolenBases, CaughtStealing),
+                      names_to = "Result", values_to = "Count") %>%
+  ggplot(aes(x = count, y = Count, fill = Result)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  geom_text(aes(label = Count), 
+            position = position_dodge(width = 0.9),
+            vjust = -0.5, size = 3) + 
+  geom_text(data = . %>% distinct(count, SB_Pct),
+            aes(x = count, y = -1.5,
+                label = paste0(SB_Pct, "%"), fill = NULL),
+            size = 3, color = "black") +
+  scale_fill_manual(values = c("StolenBases" = "steelblue", "CaughtStealing" = "firebrick")) + 
+  labs(title = "Stolen Base Outcomes by Count",
+       x = "Count", y = "Count",
+       caption = "Percentage shown below x-axis = SB success rate") + 
+  theme_minimal()
+```
+
+\newpage
+
+```{r, include = FALSE}
+predict_sb_prob <- function(PitcherThrows, IVB, HorzBreak, RelSpeed, Extension, ZoneTime, ExchangeTime, ThrowSpeed, CatchPositionX, CatchPositionZ, count){
+  x <- data.frame(
+    PitcherThrows = PitcherThrows,
+    IVB = IVB,
+    HorzBreak = HorzBreak,
+    RelSpeed = RelSpeed,
+    Extension = Extension,
+    ZoneTime = ZoneTime,
+    ExchangeTime = ExchangeTime,
+    ThrowSpeed = ThrowSpeed,
+    CatchPositionX = CatchPositionX,
+    CatchPositionZ = CatchPositionZ,
+    count = count
+  )
+  
+  prob <- predict(sb_model, newdata = x, type = "response")
+  
+  paste0(round(prob*100, 1), "%")
+}
+```
+
+```{r, include = FALSE}
+pitch_types <- sb_model_data %>%
+  group_by(TaggedPitchType) %>%
+  summarise(
+    n = n(),
+    ZoneTime = mean(ZoneTime),
+    Extension = mean(Extension),
+    IVB = mean(IVB),
+    HorzBreak = mean(HorzBreak),
+    RelSpeed = mean(RelSpeed),
+    ExchangeTime = mean(ExchangeTime),
+    ThrowSpeed = mean(ThrowSpeed),
+    CatchPositionX = mean(CatchPositionX),
+    CatchPositionZ = mean(CatchPositionZ),
+    PitcherThrows = "Right",
+    count = "Even"
+  )
+
+pitch_types_general <- pitch_types %>%
+  mutate(PitchCategory = case_when(
+    TaggedPitchType %in% c("Fastball", "Sinker", "FourSeamFastBall", "Cutter") ~"All Fastballs",
+    TaggedPitchType %in% c("Slider", "Curveball", "Sweeper") ~ "All Breaking Balls",
+    TaggedPitchType %in% c("ChangeUp", "Splitter") ~ "All Off Speeds",
+    T ~ "Undefined/Other"
+  )) %>%
+  group_by(PitchCategory) %>%
+  summarise(
+    n = sum(n),
+    ZoneTime = mean(ZoneTime),
+    Extension = mean(Extension),
+    IVB = mean(IVB),
+    HorzBreak = mean(HorzBreak),
+    RelSpeed = mean(RelSpeed),
+    ExchangeTime = mean(ExchangeTime),
+    ThrowSpeed = mean(ThrowSpeed),
+    CatchPositionX = mean(CatchPositionX),
+    CatchPositionZ = mean(CatchPositionZ),
+    PitcherThrows = "Right",
+    count = "Even"
+  ) %>%
+  arrange(desc(n))
+```
+
+Provided on this page are reports for the stolen base probability by each pitch. `n` dictates the number of pitches the model is trained on to gather the probability. A higher `n` yields more defensible results. Pitch types are differentiated by user tagging.
+
+Insights from this page can be utilized to diagnose the probability of stealing on a pitcher based on their pitching arsenal. Stealing against a reliever heavily reliant on the breaking ball could be advantageous to crucial late-game runs.
+
+**Note: all probabilities are given a RHP on Even count**
+\vspace{20pt}
+
+```{r, echo = FALSE}
+pitch_types %>%
+  rowwise() %>%
+  mutate(SB_Prob = predict_sb_prob(
+    PitcherThrows = PitcherThrows,
+    ZoneTime = ZoneTime,
+    Extension = Extension,
+    IVB = IVB,
+    HorzBreak = HorzBreak,
+    RelSpeed = RelSpeed,
+    ExchangeTime = ExchangeTime,
+    ThrowSpeed = ThrowSpeed,
+    CatchPositionX = CatchPositionX,
+    CatchPositionZ = CatchPositionZ,
+    count = count
+  )) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  dplyr::select(TaggedPitchType, n, SB_Prob) %>%
+  knitr::kable(caption = "Stolen Base Probability by Pitch")
+```
+
+```{r, echo = FALSE}
+pitch_types_general %>%
+  rowwise() %>%
+  mutate(SB_Prob = predict_sb_prob(
+    PitcherThrows = PitcherThrows,
+    ZoneTime = ZoneTime,
+    Extension = Extension,
+    IVB = IVB,
+    HorzBreak = HorzBreak,
+    RelSpeed = RelSpeed,
+    ExchangeTime = ExchangeTime,
+    ThrowSpeed = ThrowSpeed,
+    CatchPositionX = CatchPositionX,
+    CatchPositionZ = CatchPositionZ,
+    count = count
+  )) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  dplyr::select(PitchCategory, n, SB_Prob) %>%
+  knitr::kable(caption = "Stolen Base Probability by General Pitch Type")
+```
+
+\newpage
+
+**NEXT STEPS**
+
+- Backstop+
+
+- Personalize it to specific pitcher/catchers for scouting reports.
+
+- Figure out how to clean and incorporate more historical data.
+
+- Personalize it to Blues personnel. Everyone can't steal.
+
